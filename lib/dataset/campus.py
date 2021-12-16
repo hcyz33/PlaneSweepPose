@@ -4,6 +4,7 @@ import logging
 import pickle
 import json
 from collections import OrderedDict
+import aist_plusplus
 
 import numpy as np
 import scipy.io as scio
@@ -12,6 +13,7 @@ from scipy.spatial.distance import squareform
 import torch
 
 from utils.transforms import project_pose, back_project_pose
+
 
 
 logger = logging.getLogger(__name__)
@@ -111,6 +113,7 @@ class Campus(torch.utils.data.Dataset):
         return cameras
 
     def _get_db(self):
+
         db = []
 
         datafile = os.path.join(self.dataset_root, "actorsGT.mat")
@@ -232,7 +235,7 @@ class Campus(torch.utils.data.Dataset):
         return kpts, pose_vis, joint_vis, pose_depths, joint_depths, meta
 
     def evaluate(self, preds, confs, recall_threshold=500):
-        """
+        """_get_single_view_item
         Args
             preds: [N, Np, Nj]
         """
@@ -328,7 +331,8 @@ class Campus(torch.utils.data.Dataset):
                     weights = 90 - all_angle
                     mean_pose3d = np.sum(all_pose3d[:, :, :3] * weights.reshape(-1, 1, 1), axis=0) / (np.sum(weights) + 1e-8)
                     final_pose3d_pool.append(mean_pose3d)
-
+            
+            pred = final_pose3d_pool
             pred = np.stack([self.coco2campus3D(p[:, :3]) for p in final_pose3d_pool])  # [Np, Nj, 3]
 
             for person in range(num_persons):
@@ -401,3 +405,5 @@ class Campus(torch.utils.data.Dataset):
         campus_pose[13] = head_top
 
         return campus_pose
+
+

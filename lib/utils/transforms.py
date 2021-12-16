@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-
+from core.config import config
 
 def torch_unfold_camera_param(camera, device=None):
     R = torch.as_tensor(camera['R'], dtype=torch.float, device=device)
@@ -35,12 +35,25 @@ def torch_project_point(x, R, T, f, c, k, p):
     Returns
         y: Bx...x2 points in pixel space
     """
+    import dataset
+    # dataset.plt_3d(x[0,0]*10)
     batch_size, num_persons, num_joints, num_dimension = x.shape
     assert num_dimension == 3
 
     x = x.reshape(batch_size, -1, 3).transpose(1, 2)  # [B, 3, PJ]
 
-    xcam = torch.bmm(R, x - T)  # [B, 3, PJ]
+    # the way of rotation and trans in two dataset is not same
+    # aist rotate trans
+    # others trans rotate  
+    if 'aist' in config.DATASET.TEST_DATASET:
+        xcam = torch.bmm(R, x ) + T  # [B, 3, PJ]
+    else:
+        xcam = torch.bmm(R, x - T) # [B, 3, PJ]
+    # xcam = torch.bmm(R, x)  # [B, 3, PJ]
+
+    k3d = xcam.transpose(1, 2).reshape(batch_size, num_persons, num_joints, num_dimension)
+
+    # dataset.plt_3d(k3d[0,0]*10)
     y = xcam[:, :2, :] / (xcam[:, 2:, :] + 1e-5)  # [B, 2, PJ]
 
     # === add camera distortion
@@ -96,12 +109,70 @@ def torch_back_project_point(y, depth, R, T, f, c, k, p):
     xcam = xcam * d
     xcam = xcam.reshape(batch_size, 3, -1)  # [B, 3, PJ]
 
-    x = torch.bmm(torch.inverse(R), xcam) + T  # [B, 3, PJ]
+    # the way of rotation and trans in two dataset is not same
+    # aist rotate trans
+    # others trans rotate  
+    if 'aist' in config.DATASET.TEST_DATASET:
+        x = torch.bmm(torch.inverse(R), xcam - T)  # [B, 3, PJ]
+    else:
+        x = torch.bmm(torch.inverse(R), xcam) + T  # [B, 3, PJ]\
+
     x = x.transpose(1, 2)  # [B, PJ, 3]
     x = x.reshape(batch_size, num_persons, num_joints, 3)  # [B, P, J, 3]
 
     return x
 
+def torch_back_project_pose_diff_depth_per_joint(y, depth, camera):
+    R, T, f, c, k, p = torch_unfold_camera_param(camera, device=y.device)
+    return torch_back_project_point_diff_depth_per_joint(y, depth, R, T, f, c, k, p)
+
+
+def torch_back_project_point_diff_depth_per_joint(y, depth, R, T, f, c, k, p):
+    """
+    Args
+        y: BxPxJx2 points in image frame
+        depth: BxPxJ or Bx1xJ
+        R: Bx3x3 Camera rotation matrix
+        T: Bx3x1 Camera translation parameters
+        f: Bx2x1 Camera focal length
+        c: Bx2x1 Camera center
+        k: Bx3x1
+        p: Bx2x1
+    Returns
+        x: Bx...x3 points in world coordinate
+    """
+    batch_size, num_persons, num_joints, num_dimension = y.shape
+    assert num_dimension == 2
+
+    y = y.reshape(batch_size, -1, 2).transpose(1, 2)  # [B, 2, PJ]
+
+    xcam = (y - c) / f  # [B, 2, PJ]
+
+    # === remove camera distortion (approx)
+    r = torch.sum(xcam ** 2, dim=1)  # [B, PJ]
+    d = 1 - k[:, 0] * r - k[:, 1] * r * r - k[:, 2] * r * r * r  # [B, PJ]
+    u = xcam[:, 0, :] * d - 2 * p[:, 0] * xcam[:, 0, :] * xcam[:, 1, :] - p[:, 1] * (r + 2 * xcam[:, 0, :] * xcam[:, 0, :])  # [B, PJ]
+    v = xcam[:, 1, :] * d - 2 * p[:, 1] * xcam[:, 0, :] * xcam[:, 1, :] - p[:, 0] * (r + 2 * xcam[:, 1, :] * xcam[:, 1, :])  # [B, PJ]
+    xcam = torch.stack([u, v], dim=1)  # [B, 2, PJ]
+
+    xcam = torch.cat([xcam, torch.ones(batch_size, 1, xcam.size(-1)).to(xcam.device)], dim=1)  # [B, 3, PJ]
+    xcam = xcam.reshape(batch_size, 3, num_persons, num_joints)  # [B, 3, P, J]
+    d = depth.reshape(batch_size, 1, -1, num_joints)  # [B, 1, 1 or P, J]
+    xcam = xcam * d
+    xcam = xcam.reshape(batch_size, 3, -1)  # [B, 3, PJ]
+
+    # the way of rotation and trans in two dataset is not same
+    # aist rotate trans
+    # others trans rotate  
+    if 'aist' in config.DATASET.TEST_DATASET:
+        x = torch.bmm(torch.inverse(R), xcam - T)  # [B, 3, PJ]
+    else:
+        x = torch.bmm(torch.inverse(R), xcam) + T  # [B, 3, PJ]\
+
+    x = x.transpose(1, 2)  # [B, PJ, 3]
+    x = x.reshape(batch_size, num_persons, num_joints, 3)  # [B, P, J, 3]
+
+    return x
 
 def unfold_camera_param(camera):
     R = camera['R']
@@ -132,7 +203,13 @@ def project_point(x, R, T, f, c, k, p):
         ypixel.T: Nx2 points in pixel space
         depth: N points
     """
-    xcam = R.dot(x.T - T)
+
+    if 'aist' in config.DATASET.TEST_DATASET:
+        xcam = R.dot(x.T) + T  # [B, 3, PJ]
+    else:
+        xcam = R.dot(x.T - T) # [B, 3, PJ]
+
+    
     y = xcam[:2] / (xcam[2] + 1e-5)
 
     # === add camera distortion

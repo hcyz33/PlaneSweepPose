@@ -12,6 +12,7 @@ def train_3d(config, model, optimizer, loader, epoch, output_dir):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
+    losses_rough_pose = AverageMeter()
     losses_pose = AverageMeter()
     losses_joint = AverageMeter()
 
@@ -30,9 +31,12 @@ def train_3d(config, model, optimizer, loader, epoch, output_dir):
         output_dict, loss_dict = model(kpts=kpts, pose_vis=pose_vis, joint_vis=joint_vis, gt_pose_depths=pose_depths, gt_joint_depths=joint_depths, meta=meta)
 
         loss = loss_dict["total"]
+        loss_rough_pose = loss_dict["rough_pose"]
         loss_pose = loss_dict["pose"]
         loss_joint = loss_dict["joint"]
+        
         losses.update(loss.item())
+        losses_rough_pose.update(loss_rough_pose.item())
         losses_pose.update(loss_pose.item())
         losses_joint.update(loss_joint.item())
 
@@ -48,12 +52,14 @@ def train_3d(config, model, optimizer, loader, epoch, output_dir):
                   "Time: {batch_time.val:.3f}s ({batch_time.avg:.3f}s)\t" \
                   "Data: {data_time.val:.3f}s ({data_time.avg:.3f}s)\t" \
                   "Loss: {loss.val:.6f} ({loss.avg:.6f})\t" \
+                  "Loss_rough_pose: {loss_rough_pose.val:.7f} ({loss_rough_pose.avg:.7f})\t"\
                   "Loss_pose: {loss_pose.val:.7f} ({loss_pose.avg:.7f})\t" \
                   "Loss_joint: {loss_joint.val:.7f} ({loss_joint.avg:.7f})".format(
-                      epoch, i + 1, min(len(loader), config.TRAIN.STEP_PER_EPOCH),
+                    #   epoch, i + 1, min(len(loader), config.TRAIN.STEP_PER_EPOCH),
+                      epoch, i + 1, len(loader),
                       batch_time=batch_time,
                       data_time=data_time,
-                      loss=losses, loss_pose=losses_pose, loss_joint=losses_joint)
+                      loss=losses, loss_rough_pose=losses_rough_pose, loss_pose=losses_pose, loss_joint=losses_joint)
             logger.info(msg)
 
 
