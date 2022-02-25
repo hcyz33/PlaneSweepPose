@@ -4,10 +4,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import copy
 
+
 from utils.transforms import torch_back_project_pose, torch_project_pose, torch_back_project_pose_diff_depth_per_joint
 from models.softargmax import SoftArgMax
 from models.cnns import PoseCNN, JointCNN
 from models.pose_regress_net import PoseRegressNet
+from dataset.coco_bone import cal_angle, bone_pairs, cal_bone_length, coco_bones_def
 
 
 class MultiViewMultiPersonPoseNet(nn.Module):
@@ -31,11 +33,14 @@ class MultiViewMultiPersonPoseNet(nn.Module):
         self.register_buffer("joint_relative_depth_labels", torch.as_tensor(self.jlabels, dtype=torch.float))
 
         num_joints=cfg.NETWORK.NUM_JOINTS
-        self.rough_3d_pose_cnn = PoseRegressNet(num_joints=num_joints*2, hidden_size=cfg.NETWORK.HIDDEN_SIZE, output_size=num_joints)
-        self.pose_cnn = PoseCNN(num_joints=num_joints, hidden_size=cfg.NETWORK.HIDDEN_SIZE, output_size=1)
-        self.joint_cnn = JointCNN(num_joints=num_joints, hidden_size=cfg.NETWORK.HIDDEN_SIZE, output_size=num_joints)
+        self.rough_3d_pose_cnn = PoseRegressNet(num_joints=num_joints*2, hidden_size=cfg.NETWORK.HIDDEN_SIZE_ROUGH, output_size=num_joints)
+        self.pose_cnn = PoseCNN(num_joints=num_joints, num_bones=len(coco_bones_def), hidden_size=cfg.NETWORK.HIDDEN_SIZE, output_size=1)
+        self.joint_cnn = JointCNN(num_joints=num_joints, num_bones=len(coco_bones_def), hidden_size=cfg.NETWORK.HIDDEN_SIZE, output_size=num_joints)
         self.softargmax_kernel_size = cfg.NETWORK.SOFTARGMAX_KERNEL_SIZE
         self.softargmax_net = SoftArgMax()
+
+    
+
 
     def feature_extraction(self, poses_3d, poses_2d_ref, vis_target, vis_ref, meta_target, meta_ref, sigma, show=False):
         """
@@ -73,10 +78,12 @@ class MultiViewMultiPersonPoseNet(nn.Module):
         if show:
             import dataset
             for i in range(batch_size):
-                dataset.plt_2d(pr[i, 0, 0, :, 0, :].cpu().numpy(),time=4000)
+                # dataset.plt_2d(pr[i, 0, 0, :, 0, :].cpu().numpy(),time=4000)\
+                dataset.plt_3d(poses_3d[i, 0, :, 5, :].cpu().numpy())
                 for j in range(num_depth_levels):
+                    pass
                     # dataset.plt_3d(poses_3d[i, 0, :, j, :].cpu().numpy())
-                    dataset.plt_2d(poses_2d_target[i, 0, :, j, :].cpu().numpy(),time=100)
+                    # dataset.plt_2d(poses_2d_target[i, 0, :, j, :].cpu().numpy(),time=100)
                 
         
         
@@ -94,7 +101,7 @@ class MultiViewMultiPersonPoseNet(nn.Module):
         matched_vis_ref = torch.gather(vis_ref.reshape(batch_size, num_persons, num_joints, 1, 1).repeat(1, 1, 1, num_depth_levels, 1),
                                        dim=1,
                                        index=min_matching.reshape(batch_size, num_persons, 1, num_depth_levels, 1).repeat(1, 1, num_joints, 1, 1))  # [B, Npt, Nj, Nd, 1]
-
+        
         # === compute score for each target pose based on the distance to its respective matched reference pose
         matching_dist = torch.sum((poses_2d_target - matched_poses_2d_ref) ** 2, dim=-1)  # [B, Npt, Nj, Nd]
         vr = matched_vis_ref.reshape(batch_size, num_persons, num_joints, num_depth_levels)  # [B, Npt, Nj, Nd]
@@ -102,6 +109,28 @@ class MultiViewMultiPersonPoseNet(nn.Module):
             score = torch.exp(-torch.sqrt(matching_dist) / sigma)  # [B, Npt, Nj, Nd]
         else:
             score = torch.exp(-matching_dist / (sigma ** 2))  # [B, Npt, Nj, Nd]
+        
+        # angle_ref = torch.zeros(batch_size, num_persons, len(bone_pairs)).to(device)
+        # angle_target = torch.zeros(batch_size, num_persons, len(bone_pairs), num_depth_levels).to(device)
+
+        # angle_ref = cal_angle(poses_2d_ref,angle_ref)
+        # angle_target = cal_angle(poses_2d_target,angle_target)
+
+        # score_angle = torch.exp(-torch.abs(angle_ref.reshape(*angle_ref.shape,1) - angle_target))
+
+        # score = torch.cat([score,score_angle],dim=2)
+
+        bone_length_ref = torch.zeros(batch_size, num_persons, len(coco_bones_def), num_depth_levels).to(device)
+        bone_length_target = torch.zeros(batch_size, num_persons, len(coco_bones_def), num_depth_levels).to(device)
+
+        bone_length_ref = cal_bone_length(matched_poses_2d_ref,bone_length_ref)
+        bone_length_target = cal_bone_length(poses_2d_target,bone_length_target)
+
+        score_bone_length = torch.exp(-torch.abs(bone_length_ref - bone_length_target)/5)
+
+        temp = torch.cat([score,score_bone_length],dim=2)
+        
+
 
         # === compute the visibility of each target joint in the reference view
         bounding = torch.zeros(batch_size, num_persons, num_joints, num_depth_levels)  # [B, Npt, Nj, Nd]
@@ -109,12 +138,15 @@ class MultiViewMultiPersonPoseNet(nn.Module):
         for b in range(batch_size):
             image_width = meta_ref["image_width"][b]
             image_height = meta_ref["image_height"][b]
-            bounding[b, :, :, :] = (poses_2d_target[b, :, :, :, 0] >= 0) & (poses_2d_target[b, :, :, :, 1] >= 0) & (poses_2d_target[b, :, :, :, 0] <= image_width - 1) & (poses_2d_target[b, :, :, :, 1] <= image_height - 1)
-
+            bounding[b, :, :num_joints, :] = (poses_2d_target[b, :, :, :, 0] >= 0) & (poses_2d_target[b, :, :, :, 1] >= 0) & (poses_2d_target[b, :, :, :, 0] <= image_width - 1) & (poses_2d_target[b, :, :, :, 1] <= image_height - 1)
+            # bounding[b, :, num_joints:, :] = 1
         # === incorporate reference joint visibility into the aggregation of scores
         bounding = bounding * vr
+        # bounding[:, :, :num_joints, :]  = bounding[:, :, :num_joints, :]  * vr
 
-        return score, bounding
+        bounding2 = torch.ones(batch_size, num_persons, len(coco_bones_def), num_depth_levels).to(device) 
+        bounding2 = bounding2 * vr[:,:,:1,:].repeat(1, 1, len(coco_bones_def), 1)
+        return score, score_bone_length, bounding, bounding2
 
     def forward(self, kpts, pose_vis, joint_vis, gt_pose_depths, gt_joint_depths, meta):
         """
@@ -150,6 +182,8 @@ class MultiViewMultiPersonPoseNet(nn.Module):
         kpts_2d_target_cp = kpts_2d_target_cp.reshape([batch_size * num_persons, num_joints*num_coordinate, 1])
         rough_reletive_depth = self.rough_3d_pose_cnn(kpts_2d_target_cp) * 1000
         rough_reletive_depth = rough_reletive_depth.reshape([batch_size, num_persons, num_joints])
+        # rough_reletive_depth = torch.zeros([batch_size, num_persons, num_joints]).to(device)
+
 
         # === stage 1
         kpts_3d_all_depth = []
@@ -171,22 +205,34 @@ class MultiViewMultiPersonPoseNet(nn.Module):
         scores = None
         boundings = None
         for rv in range(1, num_views):
-            score, bounding = self.feature_extraction(kpts_3d_all_depth, kpts[rv], joint_vis[0], joint_vis[rv], meta[0], meta[rv], self.pose_sigma, False)  # [B, Np, Nj, Nd], [B, Np, Nj, Nd]
+            score, score2, bounding, bounding2 = self.feature_extraction(kpts_3d_all_depth, kpts[rv], joint_vis[0], joint_vis[rv], meta[0], meta[rv], self.pose_sigma, False)  # [B, Np, Nj, Nd], [B, Np, Nj, Nd]
             if scores is None:
                 scores = score * bounding
+                scores2 = score2 * bounding2
             else:
                 scores += score * bounding
+                scores2 += score2 * bounding2
             if boundings is None:
                 boundings = bounding
+                boundings2 = bounding2
             else:
                 boundings += bounding
+                boundings2 += bounding2
 
         pose_score_volume = scores / (boundings + 1e-8)  # [B, Np, Nj, Nd]
 
         output["pose_score_volume"] = pose_score_volume  # [B, Np, Nj, Nd]
 
         pose_score_volume = pose_score_volume.reshape(batch_size * num_persons, num_joints, len(self.pose_depth_labels))  # [B * Np, Nj, Nd]
-        pose_depth_volume = self.pose_cnn(pose_score_volume)  # [B * Np, 1, Nd]
+        
+        pose_score_volume2 = scores2 / (boundings2 + 1e-8)  # [B, Np, Nj, Nd]
+
+        output["pose_score_volume2"] = pose_score_volume2  # [B, Np, Nj, Nd]
+
+        pose_score_volume2 = pose_score_volume2.reshape(batch_size * num_persons, len(coco_bones_def), len(self.pose_depth_labels))  # [B * Np, Nj, Nd]
+        
+        
+        pose_depth_volume = self.pose_cnn(pose_score_volume, pose_score_volume2)  # [B * Np, 1, Nd]
         pose_depth_volume = F.softmax(pose_depth_volume, dim=-1)  # [B * Np, 1, ~Nd]
 
         output["pose_depth_volume"] = pose_depth_volume.reshape(batch_size, num_persons, len(self.pose_depth_labels))  # [B, Np, Nd]
@@ -218,22 +264,33 @@ class MultiViewMultiPersonPoseNet(nn.Module):
         scores = None
         boundings = None
         for rv in range(1, num_views):
-            score, bounding = self.feature_extraction(kpts_3d_all_depth, kpts[rv], joint_vis[0], joint_vis[rv], meta[0], meta[rv], self.joint_sigma,False)  # [B, Np, Nj, Nrd], [B, Np, Nj, Nrd]
+            score, score2, bounding, bounding2 = self.feature_extraction(kpts_3d_all_depth, kpts[rv], joint_vis[0], joint_vis[rv], meta[0], meta[rv], self.joint_sigma,False)  # [B, Np, Nj, Nrd], [B, Np, Nj, Nrd]
             if scores is None:
                 scores = score * bounding
+                scores2 = score2 * bounding2
             else:
                 scores += score * bounding
+                scores2 += score2 * bounding2
             if boundings is None:
                 boundings = bounding
+                boundings2 = bounding2
             else:
                 boundings += bounding
+                boundings2 += bounding2
 
         joint_score_volume = scores / (boundings + 1e-8)  # [B, Np, Nj, Nrd]
 
         output["joint_score_volume"] = joint_score_volume  # [B, Np, Nj, Nrd]
 
         joint_score_volume = joint_score_volume.reshape(batch_size * num_persons, num_joints, len(self.joint_relative_depth_labels))  # [B * Np, Nj, Nrd]
-        joint_depth_volume = self.joint_cnn(joint_score_volume)  # [B * Np, Nj, Nrd]
+        
+        joint_score_volume2 = scores2 / (boundings2 + 1e-8)  # [B, Np, Nj, Nrd]
+
+        output["joint_score_volume2"] = joint_score_volume2  # [B, Np, Nj, Nrd]
+
+        joint_score_volume2 = joint_score_volume2.reshape(batch_size * num_persons, len(coco_bones_def), len(self.joint_relative_depth_labels))  # [B * Np, Nj, Nrd]
+
+        joint_depth_volume = self.joint_cnn(joint_score_volume, joint_score_volume2)  # [B * Np, Nj, Nrd]
         joint_depth_volume = F.softmax(joint_depth_volume, dim=-1)  # [B * Np, Nj, ~Nrd]
 
         output["joint_depth_volume"] = joint_depth_volume.reshape(batch_size, num_persons, num_joints, len(self.joint_relative_depth_labels))  # [B, Np, Nj, Nrd]
@@ -255,7 +312,8 @@ class MultiViewMultiPersonPoseNet(nn.Module):
                 "rough_pose":loss_rough_pose,
                 "pose": loss_pose,
                 "joint": loss_joint,
-                "total": loss_rough_pose + loss_pose + loss_joint,
+                # "total": 0.5*loss_rough_pose + loss_pose + 2 * loss_joint,
+                "total": 0.5*loss_rough_pose + loss_pose + loss_joint,
             }
         else:
             loss = None

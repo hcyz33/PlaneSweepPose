@@ -15,7 +15,7 @@ from utils.utils import load_checkpoint
 import dataset
 import models
 
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cfg", help="experiment configure file name", required=True, type=str)
@@ -66,7 +66,7 @@ def main():
     output_dir = root_output_dir / config.DATASET.TRAIN_DATASET / get_model_name(config) / cfg_name
     # model, _ = load_checkpoint(model, None, output_dir, filename="model_best_{}.pth.tar".format(args.tag))checkpoint_2021-10-22-10-16-53.pth.tar
     # model, _ = load_checkpoint(model, None, output_dir, filename="checkpoint_2021-10-22-10-16-53.pth.tar")
-    model, _ = load_checkpoint(model, None, output_dir, filename="model_best_2021-12-16-09-33-01.pth.tar")
+    model, _ = load_checkpoint(model, None, output_dir, filename="model_best_2022-02-23-18-28-09.pth.tar")
     print("=> Validating...")
     model.eval()
 

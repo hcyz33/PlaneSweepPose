@@ -21,6 +21,7 @@ config.CUDNN.ENABLED = True
 
 # === network configs
 config.NETWORK = edict()
+config.NETWORK.HIDDEN_SIZE_ROUGH = 1024
 config.NETWORK.NUM_JOINTS = 17
 config.NETWORK.HIDDEN_SIZE = 1024
 config.NETWORK.SOFTARGMAX_KERNEL_SIZE = 0

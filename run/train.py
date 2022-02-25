@@ -11,6 +11,9 @@ from core.function import train_3d, validate_3d
 from utils.utils import create_logger, save_checkpoint
 import dataset
 import models
+import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 
 def parse_args():
