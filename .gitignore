@@ -129,7 +129,6 @@ dmypy.json
 
 #output
 log
-models
 output
 
 #logs
